@@ -12,6 +12,10 @@ import threading
 import winsound
 from PIL import Image, ImageTk
 import logging
+import re
+import csv
+import pyperclip
+import random
 
 # Configure logging
 logging.basicConfig(
@@ -27,27 +31,42 @@ class TotalBattleScanner:
     def __init__(self):
         self.root = Tk()
         self.root.title("Total Battle Scanner Pro")
-        self.root.geometry("800x600")
+        self.root.geometry("1200x800")  # Increased window size
         
         # Variables
         self.filter_var = StringVar(value="Silver Only")
-        self.min_silver_var = StringVar()
-        self.min_ingots_var = StringVar()
-        self.min_wood_var = StringVar()
-        self.min_stone_var = StringVar()
-        self.shield_expiring_var = IntVar()
-        self.only_offline_var = IntVar()
-        self.continuous_scan_var = IntVar()
+        self.min_silver_var = StringVar(value="50000")  # Default minimum silver
+        self.min_ingots_var = StringVar(value="100")
+        self.min_wood_var = StringVar(value="100")
+        self.min_stone_var = StringVar(value="100")
+        self.shield_expiring_var = IntVar(value=1)  # Enable by default
+        self.shield_hours_var = StringVar(value="6")  # Alert for shields expiring in 6 hours
+        self.continuous_scan_var = IntVar(value=1)  # Enable by default
         self.scan_delay_var = IntVar(value=5)
         self.dark_mode_var = IntVar()
         self.sound_notification_var = IntVar(value=1)
+        self.auto_next_var = IntVar(value=1)  # Automatically move to next target
         
-        # Scan control
-        self.is_scanning = False
-        self.scan_thread = None
+        # Scanning pattern options
+        self.scan_pattern_var = StringVar(value="Spiral")
+        self.scan_radius_var = StringVar(value="50")  # Maximum tiles to scan
+        self.scan_direction_var = StringVar(value="Clockwise")
         
-        # Configure style for dark mode
-        self.style = ttk.Style()
+        # Advanced filtering
+        self.min_total_resources_var = StringVar(value="100000")  # Minimum total resources
+        self.exclude_alliance_var = StringVar(value="")  # Alliance tags to exclude
+        self.max_power_var = StringVar(value="")  # Maximum target power
+        self.min_inactive_time_var = StringVar(value="24")  # Hours inactive
+        
+        # Export options
+        self.export_format_var = StringVar(value="CSV")
+        
+        # Target tracking
+        self.current_coords = None
+        self.scanned_targets = set()
+        self.profitable_targets = []
+        self.current_pattern = []
+        self.pattern_index = 0
         
         self.setup_ui()
         self.load_settings()
@@ -58,8 +77,8 @@ class TotalBattleScanner:
         main_container.pack(fill='both', expand=True)
         
         # Create left and right panels
-        left_panel = Frame(main_container)
-        left_panel.pack(side='left', fill='both', expand=True)
+        left_panel = Frame(main_container, width=400)
+        left_panel.pack(side='left', fill='both', padx=(0, 10))
         
         right_panel = Frame(main_container)
         right_panel.pack(side='right', fill='both', expand=True)
@@ -68,107 +87,119 @@ class TotalBattleScanner:
         settings_frame = LabelFrame(left_panel, text="Scan Settings")
         settings_frame.pack(fill='x', pady=5)
         
-        # Resource Filters
+        # Resource Filters with better layout
         filter_frame = Frame(settings_frame)
         filter_frame.pack(fill='x', padx=5, pady=5)
         
-        Label(filter_frame, text="Scan For:").pack()
+        Label(filter_frame, text="Target Priority:").pack()
         OptionMenu(filter_frame, self.filter_var, 
                   "Silver Only", "Ingots Only", "Wood Only", "Stone Only", "All Resources").pack(fill='x')
         
         # Resource Thresholds
-        thresholds_frame = Frame(settings_frame)
+        thresholds_frame = LabelFrame(settings_frame, text="Minimum Resources")
         thresholds_frame.pack(fill='x', padx=5, pady=5)
         
-        # Create a grid layout for resource inputs
-        Label(thresholds_frame, text="Min Silver:").grid(row=0, column=0, sticky='w', pady=2)
+        # Grid layout for resource inputs
+        Label(thresholds_frame, text="Silver:").grid(row=0, column=0, sticky='w', pady=2)
         Entry(thresholds_frame, textvariable=self.min_silver_var).grid(row=0, column=1, sticky='ew', padx=5)
         
-        Label(thresholds_frame, text="Min Ingots:").grid(row=1, column=0, sticky='w', pady=2)
+        Label(thresholds_frame, text="Ingots:").grid(row=1, column=0, sticky='w', pady=2)
         Entry(thresholds_frame, textvariable=self.min_ingots_var).grid(row=1, column=1, sticky='ew', padx=5)
         
-        Label(thresholds_frame, text="Min Wood:").grid(row=2, column=0, sticky='w', pady=2)
+        Label(thresholds_frame, text="Wood:").grid(row=2, column=0, sticky='w', pady=2)
         Entry(thresholds_frame, textvariable=self.min_wood_var).grid(row=2, column=1, sticky='ew', padx=5)
         
-        Label(thresholds_frame, text="Min Stone:").grid(row=3, column=0, sticky='w', pady=2)
+        Label(thresholds_frame, text="Stone:").grid(row=3, column=0, sticky='w', pady=2)
         Entry(thresholds_frame, textvariable=self.min_stone_var).grid(row=3, column=1, sticky='ew', padx=5)
         
-        thresholds_frame.grid_columnconfigure(1, weight=1)
+        # Shield Settings
+        shield_frame = LabelFrame(settings_frame, text="Shield Settings")
+        shield_frame.pack(fill='x', padx=5, pady=5)
         
-        # Options Frame
-        options_frame = LabelFrame(settings_frame, text="Options")
+        Checkbutton(shield_frame, text="Include Targets with Expiring Shield", 
+                   variable=self.shield_expiring_var).pack(anchor='w', padx=5)
+        
+        shield_hours_frame = Frame(shield_frame)
+        shield_hours_frame.pack(fill='x', padx=5)
+        Label(shield_hours_frame, text="Alert when shield < ").pack(side='left')
+        Entry(shield_hours_frame, textvariable=self.shield_hours_var, width=5).pack(side='left')
+        Label(shield_hours_frame, text=" hours").pack(side='left')
+        
+        # Scan Options
+        options_frame = LabelFrame(settings_frame, text="Scan Options")
         options_frame.pack(fill='x', padx=5, pady=5)
         
-        # Checkbuttons in options frame
-        Checkbutton(options_frame, text="Include Shield Expiring Soon", 
-                   variable=self.shield_expiring_var).pack(anchor='w', padx=5)
-        Checkbutton(options_frame, text="Only Show Offline Players", 
-                   variable=self.only_offline_var).pack(anchor='w', padx=5)
         Checkbutton(options_frame, text="Continuous Scan", 
                    variable=self.continuous_scan_var).pack(anchor='w', padx=5)
         
-        # Scan Delay
+        Checkbutton(options_frame, text="Auto-move to Next Target", 
+                   variable=self.auto_next_var).pack(anchor='w', padx=5)
+        
         delay_frame = Frame(options_frame)
         delay_frame.pack(fill='x', padx=5, pady=5)
         Label(delay_frame, text="Scan Delay (seconds):").pack(side='left')
         Scale(delay_frame, from_=1, to=60, variable=self.scan_delay_var, 
               orient='horizontal').pack(side='left', fill='x', expand=True)
         
-        # UI Options
-        ui_frame = LabelFrame(settings_frame, text="UI Options")
-        ui_frame.pack(fill='x', padx=5, pady=5)
+        # Right Panel - Results
+        # Profitable Targets
+        targets_frame = LabelFrame(right_panel, text="Profitable Targets")
+        targets_frame.pack(fill='both', expand=True, pady=(0, 5))
         
-        Checkbutton(ui_frame, text="Dark Mode", 
-                   variable=self.dark_mode_var, 
-                   command=self.toggle_theme).pack(anchor='w', padx=5)
-        Checkbutton(ui_frame, text="Sound Notifications", 
-                   variable=self.sound_notification_var).pack(anchor='w', padx=5)
+        # Create Treeview for targets
+        self.targets_tree = ttk.Treeview(targets_frame, 
+            columns=("Coords", "Resources", "Shield", "Last Scan"),
+            show='headings'
+        )
+        
+        # Configure columns
+        self.targets_tree.heading("Coords", text="Coordinates")
+        self.targets_tree.heading("Resources", text="Resources")
+        self.targets_tree.heading("Shield", text="Shield Status")
+        self.targets_tree.heading("Last Scan", text="Last Scan")
+        
+        # Add scrollbar
+        targets_scroll = ttk.Scrollbar(targets_frame, orient="vertical", 
+                                     command=self.targets_tree.yview)
+        self.targets_tree.configure(yscrollcommand=targets_scroll.set)
+        
+        self.targets_tree.pack(side='left', fill='both', expand=True)
+        targets_scroll.pack(side='right', fill='y')
+        
+        # Scan Status
+        status_frame = LabelFrame(right_panel, text="Scan Status")
+        status_frame.pack(fill='both', expand=True)
+        
+        self.status_output = Text(status_frame, height=10)
+        self.status_output.pack(fill='both', expand=True, padx=5, pady=5)
         
         # Control Buttons Frame
-        control_frame = Frame(settings_frame)
-        control_frame.pack(fill='x', padx=5, pady=10)
+        control_frame = Frame(right_panel)
+        control_frame.pack(fill='x', pady=10)
         
-        # Make buttons more prominent
-        self.start_btn = Button(control_frame, text="Start Scan", 
+        self.start_btn = Button(control_frame, text="Start Scanning", 
                          command=self.start_scan, 
                          width=15, 
                          height=2,
-                         bg='#4CAF50',  # Green background
-                         fg='white',     # White text
+                         bg='#4CAF50',
+                         fg='white',
                          font=('Arial', 10, 'bold'))
         self.start_btn.pack(side='left', padx=5)
         
-        self.stop_btn = Button(control_frame, text="Stop Scan", 
+        self.stop_btn = Button(control_frame, text="Stop Scanning", 
                         command=self.stop_scan, 
                         width=15,
                         height=2,
-                        bg='#f44336',  # Red background
-                        fg='white',     # White text
+                        bg='#f44336',
+                        fg='white',
                         font=('Arial', 10, 'bold'))
         self.stop_btn.pack(side='left', padx=5)
         
-        self.export_btn = Button(control_frame, text="Export Data", 
-                         command=self.export_data, 
+        self.export_btn = Button(control_frame, text="Export Targets", 
+                         command=self.export_targets, 
                          width=15,
                          height=2)
         self.export_btn.pack(side='left', padx=5)
-        
-        # Right Panel - Status and History
-        status_frame = LabelFrame(right_panel, text="Scan Status")
-        status_frame.pack(fill='both', expand=True, padx=5, pady=5)
-        
-        self.status_output = Text(status_frame, height=15, width=50)
-        self.status_output.pack(fill='both', expand=True, padx=5, pady=5)
-        
-        # History View
-        history_frame = LabelFrame(right_panel, text="Scan History")
-        history_frame.pack(fill='both', expand=True, padx=5, pady=5)
-        
-        self.history_tree = ttk.Treeview(history_frame, columns=("Time", "Resources", "Status"), show='headings')
-        self.history_tree.heading("Time", text="Time")
-        self.history_tree.heading("Resources", text="Resources")
-        self.history_tree.heading("Status", text="Status")
-        self.history_tree.pack(fill='both', expand=True, padx=5, pady=5)
         
         # Apply initial theme
         self.toggle_theme()
@@ -273,115 +304,339 @@ class TotalBattleScanner:
         
     def scan_game(self):
         try:
-            self.status_output.insert(END, "Starting scan...\n")
+            if not self.current_coords:
+                self.find_next_target()
+                return
+                
+            self.status_output.insert(END, f"Scanning coordinates {self.current_coords}...\n")
             self.status_output.see(END)
             
-            pyautogui.screenshot("screenshot.png")
+            # Take screenshot
+            screenshot = pyautogui.screenshot()
+            screenshot_np = np.array(screenshot)
+            screenshot_cv = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2BGR)
             
-            # Load and preprocess images
-            screenshot = cv2.imread("screenshot.png")
-            processed_screenshot = self.preprocess_image(screenshot)
+            # Check for shield status
+            shield_info = self.detect_shield_status(screenshot_cv)
             
-            # Resource detection
-            resources = {
-                'silver': self.detect_resource("silver_area.png", self.min_silver_var.get()),
-                'ingots': self.detect_resource("ingot_area.png", self.min_ingots_var.get()),
-                'wood': self.detect_resource("wood_area.png", self.min_wood_var.get()),
-                'stone': self.detect_resource("stone_area.png", self.min_stone_var.get())
-            }
+            # If shield is active and not expiring soon, move to next target
+            if shield_info['active'] and not shield_info['expiring_soon']:
+                self.status_output.insert(END, "Shield active, moving to next target...\n")
+                self.scanned_targets.add(self.current_coords)
+                self.find_next_target()
+                return
             
-            # Status detection
-            player_online = self.detect_online_status(processed_screenshot)
-            shield_active = self.detect_shield(processed_screenshot)
+            # Detect resources
+            resources = self.detect_resources(screenshot_cv)
             
-            # Analyze results
-            result = self.analyze_scan_results(resources, player_online, shield_active)
+            # Analyze if this is a profitable target
+            result = self.analyze_target(resources, shield_info)
             
-            # Update UI and log results
+            if result['valid_target'] == 'True':
+                self.add_profitable_target(result)
+                
+            # Update UI
             self.update_ui(result)
-            self.log_scan_result(result)
             
-            # Play sound if enabled and valid target found
-            if self.sound_notification_var.get() and result['valid_target']:
-                winsound.Beep(1000, 500)
+            # Move to next target if auto-next is enabled
+            if self.auto_next_var.get():
+                self.find_next_target()
                 
         except Exception as e:
             logging.error(f"Scan error: {str(e)}")
             self.status_output.insert(END, f"Error during scan: {str(e)}\n")
             self.status_output.see(END)
-            
-    def detect_resource(self, template_path, min_value):
+
+    def detect_shield_status(self, image):
         try:
-            template = cv2.imread(template_path)
-            if template is None:
-                return {'amount': 0, 'confidence': 0}
-                
-            processed = self.preprocess_image(template)
-            text = pytesseract.image_to_string(processed, config='--psm 6')
-            amount = self.extract_number(text)
+            # Get the top portion of the screen where shield info appears
+            height, width = image.shape[:2]
+            top_area = image[0:int(height*0.2), :]
             
-            # Calculate confidence based on text recognition
-            confidence = len(text.strip()) / len(str(amount)) if amount > 0 else 0
+            # Convert to HSV for better color detection
+            hsv = cv2.cvtColor(top_area, cv2.COLOR_BGR2HSV)
+            
+            # Look for shield icon (blue/white colors)
+            lower_blue = np.array([100, 50, 50])
+            upper_blue = np.array([130, 255, 255])
+            shield_mask = cv2.inRange(hsv, lower_blue, upper_blue)
+            
+            # Check for shield time text using OCR
+            gray = cv2.cvtColor(top_area, cv2.COLOR_BGR2GRAY)
+            thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                        cv2.THRESH_BINARY_INV, 21, 4)
+            
+            text = pytesseract.image_to_string(thresh)
+            
+            # Look for time patterns (e.g., "6d 23h" or "23h 45m")
+            shield_time = self.extract_shield_time(text)
+            
+            shield_active = np.any(shield_mask > 0) or shield_time > 0
+            expiring_soon = shield_time > 0 and shield_time <= float(self.shield_hours_var.get())
             
             return {
-                'amount': amount,
-                'confidence': confidence,
-                'meets_threshold': amount >= int(min_value or 0)
+                'active': shield_active,
+                'expiring_soon': expiring_soon,
+                'hours_remaining': shield_time
             }
+            
         except Exception as e:
-            logging.error(f"Resource detection error: {str(e)}")
-            return {'amount': 0, 'confidence': 0, 'meets_threshold': False}
+            logging.error(f"Shield detection error: {str(e)}")
+            return {'active': False, 'expiring_soon': False, 'hours_remaining': 0}
+
+    def extract_shield_time(self, text):
+        try:
+            # Look for patterns like "6d 23h" or "23h 45m"
+            days = re.findall(r'(\d+)d', text)
+            hours = re.findall(r'(\d+)h', text)
             
-    def detect_online_status(self, image):
-        text = pytesseract.image_to_string(image, config='--psm 6')
-        return "Online" in text
-        
-    def detect_shield(self, image):
-        shield_template = cv2.imread("peace_shield_icon.png", 0)
-        if shield_template is None:
-            return False
+            total_hours = 0
+            if days:
+                total_hours += int(days[0]) * 24
+            if hours:
+                total_hours += int(hours[0])
+                
+            return total_hours
             
-        res = cv2.matchTemplate(image, shield_template, cv2.TM_CCOEFF_NORMED)
-        return np.any(res >= 0.8)
+        except Exception:
+            return 0
+
+    def find_next_target(self):
+        try:
+            # Get current map position
+            if not self.current_coords:
+                # Start from center of the map
+                self.current_coords = self.get_current_coordinates()
+            
+            # Move to next unscanned coordinate
+            next_coords = self.get_next_coordinates()
+            if next_coords:
+                self.current_coords = next_coords
+                # TODO: Implement map navigation to next_coords
+                self.status_output.insert(END, f"Moving to coordinates {next_coords}...\n")
+            else:
+                self.status_output.insert(END, "No more unscanned targets in range.\n")
+                self.stop_scan()
+                
+        except Exception as e:
+            logging.error(f"Error finding next target: {str(e)}")
+            self.status_output.insert(END, f"Error finding next target: {str(e)}\n")
+
+    def get_current_coordinates(self):
+        # Extract coordinates from the game UI
+        try:
+            screenshot = pyautogui.screenshot()
+            screenshot_np = np.array(screenshot)
+            screenshot_cv = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2BGR)
+            
+            # OCR to find coordinates
+            text = pytesseract.image_to_string(screenshot_cv)
+            coords = re.findall(r'K[:\s]?(\d+)[,\s]+X[:\s]?(\d+)[,\s]+Y[:\s]?(\d+)', text)
+            
+            if coords:
+                return f"K{coords[0][0]} X{coords[0][1]} Y{coords[0][2]}"
+            return None
+            
+        except Exception as e:
+            logging.error(f"Error getting coordinates: {str(e)}")
+            return None
+
+    def get_next_coordinates(self):
+        if not self.current_coords:
+            return None
+            
+        pattern = self.scan_pattern_var.get()
+        direction = self.scan_direction_var.get()
+        radius = int(self.scan_radius_var.get())
         
-    def analyze_scan_results(self, resources, player_online, shield_active):
+        if not self.current_pattern:
+            self.current_pattern = self.generate_pattern(pattern, direction, radius)
+            self.pattern_index = 0
+            
+        if self.pattern_index >= len(self.current_pattern):
+            return None
+            
+        next_coords = self.current_pattern[self.pattern_index]
+        self.pattern_index += 1
+        
+        return next_coords
+
+    def generate_pattern(self, pattern_type, direction, radius):
+        base_coords = self.parse_coordinates(self.current_coords)
+        if not base_coords:
+            return []
+            
+        k, x, y = base_coords
+        coords = []
+        
+        if pattern_type == "Spiral":
+            coords = self.generate_spiral_pattern(k, x, y, radius, direction == "Clockwise")
+        elif pattern_type == "Grid":
+            coords = self.generate_grid_pattern(k, x, y, radius, direction)
+        elif pattern_type == "Linear":
+            coords = self.generate_linear_pattern(k, x, y, radius, direction)
+        else:  # Random
+            coords = self.generate_random_pattern(k, x, y, radius)
+            
+        return [c for c in coords if c not in self.scanned_targets]
+
+    def generate_spiral_pattern(self, k, x, y, radius, clockwise=True):
+        coords = []
+        dx = 1 if clockwise else -1
+        dy = 1
+        steps = 1
+        current_x, current_y = x, y
+        
+        while steps <= radius:
+            # Move horizontally
+            for _ in range(steps):
+                current_x += dx
+                coords.append(f"K{k} X{current_x} Y{current_y}")
+            
+            # Move vertically
+            for _ in range(steps):
+                current_y += dy
+                coords.append(f"K{k} X{current_x} Y{current_y}")
+                
+            steps += 1
+            dx *= -1
+            dy *= -1
+            
+        return coords
+
+    def generate_grid_pattern(self, k, x, y, radius, direction):
+        coords = []
+        if direction in ["North-South", "South-North"]:
+            for dy in range(-radius, radius + 1):
+                for dx in range(-radius, radius + 1):
+                    coords.append(f"K{k} X{x+dx} Y{y+dy}")
+        else:  # East-West
+            for dx in range(-radius, radius + 1):
+                for dy in range(-radius, radius + 1):
+                    coords.append(f"K{k} X{x+dx} Y{y+dy}")
+        return coords
+
+    def generate_linear_pattern(self, k, x, y, radius, direction):
+        coords = []
+        if direction in ["North-South", "South-North"]:
+            for dy in range(-radius, radius + 1):
+                coords.append(f"K{k} X{x} Y{y+dy}")
+        else:  # East-West
+            for dx in range(-radius, radius + 1):
+                coords.append(f"K{k} X{x+dx} Y{y}")
+        return coords
+
+    def generate_random_pattern(self, k, x, y, radius):
+        coords = []
+        for _ in range(radius * 8):  # Generate more points for better coverage
+            dx = random.randint(-radius, radius)
+            dy = random.randint(-radius, radius)
+            if dx*dx + dy*dy <= radius*radius:  # Check if within circular radius
+                coords.append(f"K{k} X{x+dx} Y{y+dy}")
+        return list(set(coords))  # Remove duplicates
+
+    def add_profitable_target(self, result):
+        coords = self.current_coords or "Unknown"
+        resources_text = ", ".join([f"{k}: {self.format_number(v['amount'])}" 
+                                  for k, v in result['resources'].items()])
+        shield_text = "Expiring Soon" if result['shield_info']['expiring_soon'] else "No Shield"
+        
+        # Add to tree view
+        self.targets_tree.insert("", 0, values=(
+            coords,
+            resources_text,
+            shield_text,
+            result['timestamp']
+        ))
+        
+        # Add to profitable targets list
+        self.profitable_targets.append({
+            'coords': coords,
+            'resources': result['resources'],
+            'shield_info': result['shield_info'],
+            'timestamp': result['timestamp']
+        })
+
+    def analyze_target(self, resources, shield_info):
         result = {
             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             'resources': resources,
-            'player_online': str(player_online),  # Convert to string
-            'shield_active': str(shield_active),  # Convert to string
+            'shield_info': shield_info,
             'valid_target': False,
-            'reason': ""
+            'reason': "",
+            'power': self.detect_power(),
+            'alliance': self.detect_alliance()
         }
         
-        if shield_active:
+        # Check alliance exclusion
+        excluded_alliances = [a.strip() for a in self.exclude_alliance_var.get().split(',') if a.strip()]
+        if result['alliance'] in excluded_alliances:
+            result['reason'] = f"Excluded alliance: {result['alliance']}"
+            result['valid_target'] = str(False)
+            return result
+            
+        # Check power limit
+        max_power = self.max_power_var.get()
+        if max_power and result['power'] != 'Unknown':
+            try:
+                if int(result['power']) > int(max_power):
+                    result['reason'] = f"Power too high: {result['power']}"
+                    result['valid_target'] = str(False)
+                    return result
+            except ValueError:
+                pass
+        
+        # Check total resources
+        total_resources = sum(r['amount'] for r in resources.values())
+        min_total = int(self.min_total_resources_var.get() or 0)
+        if total_resources < min_total:
+            result['reason'] = f"Total resources below minimum: {total_resources} < {min_total}"
+            result['valid_target'] = str(False)
+            return result
+        
+        if shield_info['active'] and not shield_info['expiring_soon']:
             result['reason'] = "Shield active"
-        elif self.only_offline_var.get() and player_online:
-            result['reason'] = "Player is online"
+            result['valid_target'] = str(False)
         else:
-            # Check resource thresholds based on filter
+            # Original resource threshold checks
             filter_type = self.filter_var.get()
             if filter_type == "All Resources":
-                result['valid_target'] = all(r['meets_threshold'] for r in resources.values())
+                result['valid_target'] = str(all(r['meets_threshold'] for r in resources.values()))
             else:
                 resource_type = filter_type.split()[0].lower()
-                result['valid_target'] = resources[resource_type]['meets_threshold']
-                
-            if not result['valid_target']:
+                result['valid_target'] = str(resources[resource_type]['meets_threshold'])
+            
+            if result['valid_target'] == 'False':
                 result['reason'] = "Resources below threshold"
-                
-        # Convert valid_target to string for JSON serialization
-        result['valid_target'] = str(result['valid_target'])
-        return result
         
+        return result
+
+    def detect_power(self):
+        try:
+            # Implementation of power detection using OCR
+            # This would need to be customized based on where power is displayed in the game
+            return "Unknown"
+        except Exception:
+            return "Unknown"
+
+    def detect_alliance(self):
+        try:
+            # Implementation of alliance detection using OCR
+            # This would need to be customized based on where alliance tags are displayed
+            return "Unknown"
+        except Exception:
+            return "Unknown"
+
     def update_ui(self, result):
         # Update status output
         status_text = f"Scan at {result['timestamp']}\n"
+        if result['shield_info']['expiring_soon']:
+            status_text += "Shield expiring soon!\n"
         status_text += f"Resources:\n"
         for resource, data in result['resources'].items():
-            status_text += f"  {resource.title()}: {data['amount']} (Confidence: {data['confidence']:.2f})\n"
-        status_text += f"Status: {'Online' if result['player_online'] == 'True' else 'Offline'}\n"
-        status_text += f"Shield: {'Active' if result['shield_active'] == 'True' else 'Inactive'}\n"
+            amount_str = self.format_number(data['amount'])
+            status_text += f"  {resource.title()}: {amount_str} (Confidence: {data['confidence']:.2f})\n"
+        status_text += f"Shield: {'Active' if result['shield_info']['active'] else 'Inactive'}\n"
         status_text += f"Valid Target: {'Yes' if result['valid_target'] == 'True' else 'No'}\n"
         if result['reason']:
             status_text += f"Reason: {result['reason']}\n"
@@ -390,42 +645,121 @@ class TotalBattleScanner:
         self.status_output.see(END)
         
         # Update history tree
-        resources_text = ", ".join([f"{k}: {v['amount']}" for k, v in result['resources'].items()])
-        self.history_tree.insert("", 0, values=(
-            result['timestamp'],
+        resources_text = ", ".join([f"{k}: {self.format_number(v['amount'])}" 
+                                  for k, v in result['resources'].items()])
+        self.targets_tree.insert("", 0, values=(
+            result['coords'],
             resources_text,
-            "Valid" if result['valid_target'] == 'True' else "Invalid"
+            "Expiring Soon" if result['shield_info']['expiring_soon'] else "No Shield",
+            result['timestamp']
         ))
         
     def log_scan_result(self, result):
         logging.info(f"Scan Result: {json.dumps(result)}")
         
-    def export_data(self):
-        filename = f"scan_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    def export_targets(self):
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            format_type = self.export_format_var.get()
+            
+            if format_type == "CSV":
+                self.export_to_csv(f"targets_{timestamp}.csv")
+            elif format_type == "JSON":
+                self.export_to_json(f"targets_{timestamp}.json")
+            elif format_type == "Excel":
+                self.export_to_excel(f"targets_{timestamp}.xlsx")
+            else:  # Text
+                self.export_to_text(f"targets_{timestamp}.txt")
+                
+            self.status_output.insert(END, f"Targets exported to targets_{timestamp}.{format_type.lower()}\n")
+            self.status_output.see(END)
+            
+        except Exception as e:
+            logging.error(f"Export error: {str(e)}")
+            self.status_output.insert(END, f"Export error: {str(e)}\n")
+
+    def export_to_csv(self, filename):
+        with open(filename, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(["Coordinates", "Resources", "Shield Status", "Last Scan", "Power", "Alliance"])
+            for target in self.profitable_targets:
+                writer.writerow([
+                    target['coords'],
+                    self.format_resources(target['resources']),
+                    self.format_shield_status(target['shield_info']),
+                    target['timestamp'],
+                    target.get('power', 'Unknown'),
+                    target.get('alliance', 'Unknown')
+                ])
+
+    def export_to_json(self, filename):
         with open(filename, 'w') as f:
             json.dump({
-                'scan_results': self.get_history_data(),
-                'settings': self.get_current_settings()
+                'targets': self.profitable_targets,
+                'scan_settings': self.get_current_settings(),
+                'export_time': datetime.now().isoformat()
             }, f, indent=2)
-        self.status_output.insert(END, f"Data exported to {filename}\n")
-        self.status_output.see(END)
-        
-    def get_history_data(self):
-        return [self.history_tree.item(item)['values'] for item in self.history_tree.get_children()]
-        
-    def get_current_settings(self):
-        return {
-            'filter': self.filter_var.get(),
-            'min_silver': self.min_silver_var.get(),
-            'min_ingots': self.min_ingots_var.get(),
-            'min_wood': self.min_wood_var.get(),
-            'min_stone': self.min_stone_var.get(),
-            'shield_expiring': self.shield_expiring_var.get(),
-            'only_offline': self.only_offline_var.get(),
-            'continuous_scan': self.continuous_scan_var.get(),
-            'scan_delay': self.scan_delay_var.get()
-        }
-        
+
+    def export_to_excel(self, filename):
+        try:
+            import pandas as pd
+            
+            data = []
+            for target in self.profitable_targets:
+                data.append({
+                    'Coordinates': target['coords'],
+                    'Resources': self.format_resources(target['resources']),
+                    'Shield Status': self.format_shield_status(target['shield_info']),
+                    'Last Scan': target['timestamp'],
+                    'Power': target.get('power', 'Unknown'),
+                    'Alliance': target.get('alliance', 'Unknown'),
+                    'Notes': ''
+                })
+            
+            df = pd.DataFrame(data)
+            df.to_excel(filename, index=False, sheet_name='Profitable Targets')
+            
+        except ImportError:
+            self.status_output.insert(END, "Excel export requires pandas. Please install it first.\n")
+
+    def export_to_text(self, filename):
+        with open(filename, 'w') as f:
+            f.write("Total Battle Scanner - Target Report\n")
+            f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+            
+            for target in self.profitable_targets:
+                f.write(f"Target: {target['coords']}\n")
+                f.write(f"Resources: {self.format_resources(target['resources'])}\n")
+                f.write(f"Shield: {self.format_shield_status(target['shield_info'])}\n")
+                f.write(f"Last Scan: {target['timestamp']}\n")
+                f.write(f"Power: {target.get('power', 'Unknown')}\n")
+                f.write(f"Alliance: {target.get('alliance', 'Unknown')}\n")
+                f.write("-" * 50 + "\n")
+
+    def copy_to_clipboard(self):
+        try:
+            text = []
+            for target in self.profitable_targets:
+                text.append(f"{target['coords']} - {self.format_resources(target['resources'])}")
+            
+            pyperclip.copy("\n".join(text))
+            self.status_output.insert(END, "Target list copied to clipboard!\n")
+            self.status_output.see(END)
+            
+        except Exception as e:
+            self.status_output.insert(END, f"Copy error: {str(e)}\n")
+
+    def format_resources(self, resources):
+        return ", ".join([f"{k}: {self.format_number(v['amount'])}" 
+                         for k, v in resources.items()])
+
+    def format_shield_status(self, shield_info):
+        if shield_info['active']:
+            if shield_info['expiring_soon']:
+                return f"Expiring in {shield_info['hours_remaining']}h"
+            return "Active"
+        return "No Shield"
+
     def start_scan(self):
         if not self.is_scanning:
             self.is_scanning = True
@@ -455,16 +789,24 @@ class TotalBattleScanner:
                 with open('scanner_settings.json', 'r') as f:
                     settings = json.load(f)
                     self.filter_var.set(settings.get('filter', "Silver Only"))
-                    self.min_silver_var.set(settings.get('min_silver', ''))
-                    self.min_ingots_var.set(settings.get('min_ingots', ''))
-                    self.min_wood_var.set(settings.get('min_wood', ''))
-                    self.min_stone_var.set(settings.get('min_stone', ''))
-                    self.shield_expiring_var.set(settings.get('shield_expiring', 0))
-                    self.only_offline_var.set(settings.get('only_offline', 0))
-                    self.continuous_scan_var.set(settings.get('continuous_scan', 0))
+                    self.min_silver_var.set(settings.get('min_silver', '50000'))
+                    self.min_ingots_var.set(settings.get('min_ingots', '100'))
+                    self.min_wood_var.set(settings.get('min_wood', '100'))
+                    self.min_stone_var.set(settings.get('min_stone', '100'))
+                    self.shield_expiring_var.set(settings.get('shield_expiring', 1))
+                    self.shield_hours_var.set(settings.get('shield_hours', '6'))
+                    self.continuous_scan_var.set(settings.get('continuous_scan', 1))
                     self.scan_delay_var.set(settings.get('scan_delay', 5))
                     self.dark_mode_var.set(settings.get('dark_mode', 0))
                     self.sound_notification_var.set(settings.get('sound_notification', 1))
+                    self.scan_pattern_var.set(settings.get('scan_pattern', "Spiral"))
+                    self.scan_radius_var.set(settings.get('scan_radius', "50"))
+                    self.scan_direction_var.set(settings.get('scan_direction', "Clockwise"))
+                    self.min_total_resources_var.set(settings.get('min_total_resources', "100000"))
+                    self.exclude_alliance_var.set(settings.get('exclude_alliance', ""))
+                    self.max_power_var.set(settings.get('max_power', ""))
+                    self.min_inactive_time_var.set(settings.get('min_inactive_time', "24"))
+                    self.export_format_var.set(settings.get('export_format', "CSV"))
         except Exception as e:
             logging.error(f"Error loading settings: {str(e)}")
             
@@ -473,6 +815,14 @@ class TotalBattleScanner:
             settings = self.get_current_settings()
             settings['dark_mode'] = self.dark_mode_var.get()
             settings['sound_notification'] = self.sound_notification_var.get()
+            settings['scan_pattern'] = self.scan_pattern_var.get()
+            settings['scan_radius'] = self.scan_radius_var.get()
+            settings['scan_direction'] = self.scan_direction_var.get()
+            settings['min_total_resources'] = self.min_total_resources_var.get()
+            settings['exclude_alliance'] = self.exclude_alliance_var.get()
+            settings['max_power'] = self.max_power_var.get()
+            settings['min_inactive_time'] = self.min_inactive_time_var.get()
+            settings['export_format'] = self.export_format_var.get()
             
             with open('scanner_settings.json', 'w') as f:
                 json.dump(settings, f, indent=2)
@@ -487,6 +837,15 @@ class TotalBattleScanner:
         self.stop_scan()
         self.save_settings()
         self.root.destroy()
+
+    def format_number(self, number):
+        if number >= 1000000000:
+            return f"{number/1000000000:.1f}B"
+        elif number >= 1000000:
+            return f"{number/1000000:.1f}M"
+        elif number >= 1000:
+            return f"{number/1000:.1f}K"
+        return str(number)
 
 if __name__ == "__main__":
     app = TotalBattleScanner()
