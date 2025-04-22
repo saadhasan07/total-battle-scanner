@@ -1,0 +1,13 @@
+{
+  "filter": "Silver Only",
+  "min_silver": "",
+  "min_ingots": "",
+  "min_wood": "",
+  "min_stone": "",
+  "shield_expiring": 0,
+  "only_offline": 0,
+  "continuous_scan": 0,
+  "scan_delay": 5,
+  "dark_mode": 0,
+  "sound_notification": 1
+}

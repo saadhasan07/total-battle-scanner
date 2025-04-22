@@ -1,0 +1,12 @@
+2025-04-22 02:33:26,183 - ERROR - Scan error: Object of type bool is not JSON serializable
+2025-04-22 02:33:33,258 - ERROR - Scan error: Object of type bool is not JSON serializable
+2025-04-22 02:33:40,490 - ERROR - Scan error: Object of type bool is not JSON serializable
+2025-04-22 02:33:47,800 - ERROR - Scan error: Object of type bool is not JSON serializable
+2025-04-22 02:33:53,824 - ERROR - Scan error: Object of type bool is not JSON serializable
+2025-04-22 02:33:59,825 - ERROR - Scan error: Object of type bool is not JSON serializable
+2025-04-22 02:34:05,858 - ERROR - Scan error: Object of type bool is not JSON serializable
+2025-04-22 02:34:11,901 - ERROR - Scan error: Object of type bool is not JSON serializable
+2025-04-22 02:34:17,989 - ERROR - Scan error: Object of type bool is not JSON serializable
+2025-04-22 02:34:24,061 - ERROR - Scan error: Object of type bool is not JSON serializable
+2025-04-22 02:34:30,281 - ERROR - Scan error: Object of type bool is not JSON serializable
+2025-04-22 02:34:36,437 - ERROR - Scan error: Object of type bool is not JSON serializable
